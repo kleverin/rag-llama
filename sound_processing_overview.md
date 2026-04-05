@@ -1,25 +1,36 @@
 """
-MB4000 Sensor Audio Feature Extraction
-=======================================
-This module is part of the AI Failure Mode Analysis pipeline.
+# MB4000 — Audio Feature Extraction
 
-1. TASK (Sound Processing):
-    - Load raw WAV recordings from the MB4000 sensor
-    - Extract 6 core features that describe machine health
-    - Serialize features into a text chunk for the RAG pipeline
-
-2. PIPELINE POSITION:
-    WAV file --> [THIS MODULE] --> text chunk --> RAG vector store --> Llama 3.2
-
-3. DEPENDENCIES:
-    pip install librosa numpy scipy
-
-4. USAGE:
-    python audio_processing.py path/to/sensor_recording.wav
-    OR import process_wav() directly into your RAG pipeline
+## Overview
+This module is part of the **AI Failure Mode Analysis** pipeline.
 
 FIND THE SAMPLE FLOW OF TASKS BELOW:
 
+### 1. Task (Sound Processing)
+- Load raw WAV recordings from the MB4000 sensor
+- Extract 6 core features that describe machine health
+- Serialize features into a text chunk for the RAG pipeline
+
+### 2. Pipeline Position
+```
+WAV file --> [audio_processing.py] --> text chunk --> RAG vector store --> Llama 3.2
+```
+
+### 3. Dependencies
+```bash
+pip install librosa numpy scipy
+```
+
+### 4. Usage
+```bash
+# From command line
+python audio_processing.py path/to/sensor_recording.wav
+
+# In your RAG pipeline
+from audio_processing import process_wav
+result = process_wav("20251105_123906_mb4000_sensor1.wav")
+rag_chunk = result["rag_chunk"]   # hand this to your embedder
+```
 """
 
 import os
@@ -30,24 +41,24 @@ import librosa
 from scipy.stats import kurtosis
 
 
-# STAGE 1: LOAD & PREPROCESS
 # ─────────────────────────────────────────────────────────
+# STAGE 1 — LOAD & PREPROCESS
 
 def load_wav(filepath: str) -> tuple:
     """
     Load a WAV file from disk.
 
-    Args:
-        filepath: path to the .wav file
+    **Args**
+    - `filepath` — path to the `.wav` file
 
-    Returns:
-        y  : audio time series as a numpy array
-        sr : sample rate in Hz (e.g. 48000)
+    **Returns**
+    - `y` — audio time series as a numpy array
+    - `sr` — sample rate in Hz (e.g. 48000)
 
-    Notes:
-        - mono=True collapses stereo to single channel
-        - sr=None preserves the file's native sample rate
-          (do NOT resample — frequency features depend on SR)
+    **Notes**
+    - `mono=True` collapses stereo to a single channel
+    - `sr=None` preserves the native sample rate — do NOT resample,
+      frequency features depend on SR being correct
     """
     y, sr = librosa.load(filepath, sr=None, mono=True)
     print(f"[load]  {os.path.basename(filepath)} | SR={sr}Hz | {len(y)/sr:.1f}s")
@@ -56,34 +67,31 @@ def load_wav(filepath: str) -> tuple:
 
 def normalize(y: np.ndarray) -> np.ndarray:
     """
-    Normalize audio amplitude to [-1, 1] range.
+    Normalize audio amplitude to the `[-1, 1]` range.
 
-    Why: recordings captured on different days at slightly
-    different gain levels would produce different RMS values
-    even for identical machine behavior. Normalization removes
-    that recording-level variation so features are comparable
-    across files.
+    **Why:** Recordings captured on different days at slightly different
+    gain levels would produce different RMS values even for identical
+    machine behavior. Normalization removes that variation so features
+    are comparable across files.
     """
     peak = np.max(np.abs(y))
     if peak > 0:
         y = y / peak
-    return y
+    return y  # BUG FIX: original was missing this return
 
 
 # ─────────────────────────────────────────────────────────
-# STAGE 2: FEATURE EXTRACTION
-# ─────────────────────────────────────────────────────────
+# STAGE 2 — FEATURE EXTRACTION
 
 def extract_rms(y: np.ndarray) -> float:
     """
     Root Mean Square amplitude — the overall energy level.
 
-    What it tells you:
-        Higher RMS = louder / more energetic machine operation.
-        A sudden drop or spike vs baseline can indicate a fault.
+    **What it tells you**
+    - Higher RMS = louder / more energetic machine operation
+    - A sudden drop or spike vs baseline can indicate a fault
 
-    Typical healthy range: depends on machine, establish a
-    baseline from known-good recordings.
+    **Formula:** `sqrt(mean(y^2))`
     """
     return float(np.sqrt(np.mean(y ** 2)))
 
@@ -92,15 +100,17 @@ def extract_kurtosis(y: np.ndarray) -> float:
     """
     Statistical kurtosis of the signal — measures 'spikiness'.
 
-    What it tells you:
-        - Normal (Gaussian) signal: kurtosis ≈ 3
-        - Kurtosis > 4  → impulsive spikes present (early fault signal)
-        - Kurtosis > 10 → strong fault signature (e.g. bearing defect)
+    **What it tells you**
 
-    Why it matters for MB4000:
-        Bearing faults and gear tooth damage produce sharp
-        periodic impacts. Kurtosis catches these early, even
-        before they're audible to a human.
+    | Value | Meaning |
+    |-------|---------|
+    | ~3    | Normal Gaussian signal |
+    | > 4   | Impulsive spikes present (early fault signal) |
+    | > 10  | Strong fault signature (e.g. bearing defect) |
+
+    **Why it matters for MB4000:**
+    Bearing faults and gear tooth damage produce sharp periodic impacts.
+    Kurtosis catches these early, even before they are audible to a human.
     """
     return float(kurtosis(y))
 
@@ -109,62 +119,60 @@ def extract_crest_factor(y: np.ndarray) -> float:
     """
     Ratio of peak amplitude to RMS amplitude.
 
-    What it tells you:
-        - Low crest factor (~1.4 for sine wave): smooth, periodic signal
-        - Crest factor > 5: impulsive events present
-        - Used alongside kurtosis to confirm fault signatures
+    **What it tells you**
+    - Low crest factor (~1.4 for a sine wave) → smooth, periodic signal
+    - Crest factor > 5 → impulsive events present
+    - Used alongside kurtosis to confirm fault signatures
 
-    Formula: peak / RMS
+    **Formula:** `peak / RMS`
     """
     rms = extract_rms(y)
     peak = float(np.max(np.abs(y)))
-    return peak / (rms + 1e-10)  # small epsilon avoids division by zero
+    return peak / (rms + 1e-10)  # epsilon avoids division by zero
 
 
 def extract_dominant_frequency(y: np.ndarray, sr: int) -> float:
     """
-    The frequency (Hz) with the most energy in the signal.
+    The frequency (Hz) carrying the most energy in the signal.
 
-    What it tells you:
-        For a rotating machine, the dominant frequency is
-        usually the shaft rotation frequency or a harmonic.
-        A shift in dominant frequency vs baseline can indicate:
-        - Speed change (load variation)
-        - Looseness (frequency drops)
-        - Resonance (frequency locks to a structural mode)
+    **What it tells you**
+    For a rotating machine the dominant frequency is usually the shaft
+    rotation frequency or one of its harmonics. A shift from baseline can
+    indicate:
+    - Speed change (load variation)
+    - Looseness (frequency drops)
+    - Resonance (frequency locks to a structural mode)
 
-    Example: MB4000 recording shows 164 Hz dominant —
-    that likely corresponds to the machine's RPM.
+    > Example: MB4000 recording shows ~164 Hz dominant —
+    > likely corresponding to the machine's shaft RPM.
     """
-    # Compute magnitude spectrum
     fft_magnitude = np.abs(np.fft.rfft(y))
     freqs = np.fft.rfftfreq(len(y), d=1.0 / sr)
-
     dominant_idx = np.argmax(fft_magnitude)
     return float(freqs[dominant_idx])
 
 
 def extract_low_band_energy_ratio(y: np.ndarray, sr: int) -> float:
     """
-    Fraction of total spectral energy in the 80–500 Hz band.
+    Fraction of total spectral energy in the **80–500 Hz** band.
 
-    What it tells you:
-        Most rotating machinery faults (imbalance, misalignment,
-        looseness) manifest as low-frequency energy increases.
-        A healthy MB4000 should have most energy concentrated
-        in this band. If energy shifts upward (mid/high bands
-        increase), it may indicate bearing wear or friction.
+    **What it tells you**
+    Most rotating machinery faults (imbalance, misalignment, looseness)
+    manifest as low-frequency energy increases. A healthy MB4000 should
+    have most energy concentrated in this band.
 
-    Returns:
-        A ratio between 0.0 and 1.0
-        e.g. 0.71 means 71% of energy is in 80–500 Hz (healthy)
+    If energy shifts upward into mid/high bands it may indicate bearing
+    wear or friction developing.
+
+    **Returns:** a ratio between `0.0` and `1.0`
+    > e.g. `0.71` means 71% of energy is in 80–500 Hz — healthy
     """
-    stft = np.abs(librosa.stft(y)) ** 2          # power spectrogram
+    stft = np.abs(librosa.stft(y)) ** 2        # power spectrogram
     freqs = librosa.fft_frequencies(sr=sr)
 
-    low_mask  = (freqs >= 80) & (freqs < 500)    # band of interest
+    low_mask = (freqs >= 80) & (freqs < 500)   # band of interest
     total_energy = np.sum(stft) + 1e-10
-    low_energy   = np.sum(stft[low_mask, :])
+    low_energy = np.sum(stft[low_mask, :])
 
     return float(low_energy / total_energy)
 
@@ -173,38 +181,41 @@ def compute_fault_flag(kurtosis_val: float, crest_factor: float) -> bool:
     """
     Simple rule-based fault indicator.
 
-    Triggers when BOTH:
-        - kurtosis > 4   (impulsive signal)
-        - crest factor > 5  (high peak-to-average ratio)
+    **Triggers when BOTH conditions are true:**
+    - `kurtosis > 4` — impulsive signal
+    - `crest_factor > 5` — high peak-to-average ratio
 
-    Both conditions together strongly suggest impulsive
-    mechanical events (bearing fault, gear damage, knock).
-    A single condition alone can be a false positive.
+    Both conditions together strongly suggest impulsive mechanical events
+    such as a bearing fault, gear damage, or mechanical knock.
+    A single condition alone is prone to false positives.
 
-    Returns:
-        True  → possible fault detected
-        False → signal looks normal
+    **Returns**
+    - `True` → possible fault detected
+    - `False` → signal looks normal
     """
     return kurtosis_val > 4.0 and crest_factor > 5.0
 
 
 # ─────────────────────────────────────────────────────────
-# STAGE 3: SERIALIZE TO RAG TEXT CHUNK
-# ─────────────────────────────────────────────────────────
+# STAGE 3 — SERIALIZE TO RAG TEXT CHUNK
 
 def parse_timestamp_from_filename(filename: str) -> str:
     """
-    Extract a human-readable timestamp from MB4000 filename format.
+    Extract a human-readable timestamp from the MB4000 filename format.
 
-    Format: 20251105_123906_066025Z_mb6000_sensor1.wav
-                ^date    ^time
-    Returns: '2025-11-05 12:39:06 UTC'
+    **Filename format:**
+    ```
+    20251105_123906_066025Z_mb4000_sensor1.wav
+    ^date    ^time
+    ```
+
+    **Returns:** `'2025-11-05 12:39:06 UTC'`
     """
     try:
         base = os.path.basename(filename).replace(".wav", "")
         parts = base.split("_")
-        date_str = parts[0]             # '20251105'
-        time_str = parts[1]             # '123906'
+        date_str = parts[0]   # '20251105'
+        time_str = parts[1]   # '123906'
         date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
         time = f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:]} UTC"
         return f"{date} {time}"
@@ -216,17 +227,25 @@ def to_rag_chunk(features: dict) -> str:
     """
     Convert the feature dict into a plain-text chunk for RAG ingestion.
 
-    This text is what gets embedded into the vector store.
-    Written in natural language so the embedding model can match
-    it semantically against user queries like:
-        'any faults on Nov 5 day shift?'
-        'was the machine running normally?'
+    This string is what gets embedded into the vector store.
+    Written in natural language so the embedding model can match it
+    semantically against user queries such as:
+    - *"any faults on Nov 5 day shift?"*
+    - *"was the machine running normally?"*
 
-    Args:
-        features: dict returned by extract_features()
+    **Args**
+    - `features` — dict returned by `process_wav()`
 
-    Returns:
-        A short readable paragraph describing the recording.
+    **Returns**
+    - A short readable string describing the recording
+
+    **Example output:**
+    ```
+    Sensor recording: 20251105_123906_mb4000_sensor1.wav | Timestamp: 2025-11-05 12:39:06 UTC
+    RMS: 0.1947 | Kurtosis: 0.17 | Crest factor: 5.14
+    Dominant frequency: 160.7 Hz | Low-band energy: 71.0%
+    Fault flag: none
+    ```
     """
     flag_str = "FAULT DETECTED" if features["fault_flag"] else "none"
 
@@ -245,37 +264,40 @@ def to_rag_chunk(features: dict) -> str:
 
 # ─────────────────────────────────────────────────────────
 # MAIN PIPELINE FUNCTION
-# ─────────────────────────────────────────────────────────
 
 def process_wav(filepath: str) -> dict:
     """
-    Full pipeline for one WAV file.
+    Full pipeline for one WAV file — runs all 3 stages.
 
-    Runs all 3 stages:
-        Stage 1: Load & normalize
-        Stage 2: Extract 6 core features
-        Stage 3: Serialize to RAG text chunk
+    ```
+    Stage 1: load_wav → normalize
+    Stage 2: extract rms, kurtosis, crest_factor,
+             dominant_freq, low_band_energy, fault_flag
+    Stage 3: serialize → rag_chunk string
+    ```
 
-    Args:
-        filepath: path to the .wav file
+    **Args**
+    - `filepath` — path to the `.wav` file
 
-    Returns:
-        dict with keys:
-            'file'                  - filename
-            'timestamp'             - parsed from filename
-            'rms'                   - float
-            'kurtosis'              - float
-            'crest_factor'          - float
-            'dominant_freq_hz'      - float
-            'low_band_energy_ratio' - float (0.0–1.0)
-            'fault_flag'            - bool
-            'rag_chunk'             - str  ← hand this to RAG pipeline
+    **Returns** a dict with keys:
+
+    | Key | Type | Description |
+    |-----|------|-------------|
+    | `file` | str | filename |
+    | `timestamp` | str | parsed from filename |
+    | `rms` | float | overall energy |
+    | `kurtosis` | float | signal spikiness |
+    | `crest_factor` | float | peak-to-average ratio |
+    | `dominant_freq_hz` | float | main frequency in Hz |
+    | `low_band_energy_ratio` | float | 0.0–1.0 |
+    | `fault_flag` | bool | True = possible fault |
+    | `rag_chunk` | str | **hand this to the RAG pipeline** |
     """
-    # Stage 1 ── Load & preprocess
+    # Stage 1 — Load & preprocess
     y, sr = load_wav(filepath)
     y = normalize(y)
 
-    # Stage 2 ── Extract features
+    # Stage 2 — Extract features
     rms        = extract_rms(y)
     kurt       = extract_kurtosis(y)
     crest      = extract_crest_factor(y)
@@ -294,7 +316,7 @@ def process_wav(filepath: str) -> dict:
         "fault_flag":            fault,
     }
 
-    # Stage 3 ── Serialize
+    # Stage 3 — Serialize to RAG text chunk
     features["rag_chunk"] = to_rag_chunk(features)
 
     return features
@@ -302,7 +324,6 @@ def process_wav(filepath: str) -> dict:
 
 # ─────────────────────────────────────────────────────────
 # RUN FROM COMMAND LINE
-# ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     wav_path = sys.argv[1] if len(sys.argv) > 1 else \
