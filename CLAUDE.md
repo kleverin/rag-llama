@@ -5,11 +5,12 @@ RAG (Retrieval-Augmented Generation) application over IIoT/manufacturing data.
 Queries are served via FastAPI so they can be called from a phone on the local network.
 
 ## Stack
-- **LlamaIndex** — RAG pipeline (indexing + querying)
+- **LlamaIndex** — RAG pipeline (indexing + querying), `chat_mode="condense_plus_context"`, top-k=5
 - **Ollama** — local LLM (`llama3.2`) and embedding model (`nomic-embed-text`)
 - **ChromaDB** — persistent vector store at `./chroma_db`
-- **FastAPI** — REST API server on `0.0.0.0:8000`
+- **FastAPI** — REST API server on `0.0.0.0:8000` with built-in chat UI at `/`
 - **Pandas + openpyxl** — Excel ingestion
+- **librosa + scipy** — WAV audio feature extraction (audio_processing.py)
 
 ## Virtual Environment
 All dependencies live in the `iiot/` venv.
@@ -20,8 +21,9 @@ source iiot/bin/activate
 ## Key Files
 | File | Purpose |
 |------|---------|
-| `ingest.py` | Reads all `.xlsx` files from `data/`, embeds rows, stores in ChromaDB |
-| `server.py` | FastAPI server — loads ChromaDB, exposes `/ask` and `/health` |
+| `ingest.py` | Reads all `.xlsx` and `.wav` files from `data/`, embeds rows/audio chunks, stores in ChromaDB |
+| `server.py` | FastAPI server — loads ChromaDB, exposes `/ask`, `/health`, `/reset`, and the built-in chat UI at `/` |
+| `audio_processing.py` | WAV feature extraction pipeline — 3 stages: load/normalize → extract RMS/kurtosis/crest factor/dominant freq/low-band energy/fault flag → serialize to RAG text chunk |
 | `.env` | Runtime config (OLLAMA_BASE_URL, CHROMA_PATH, DATA_PATH, PORT) |
 | `requirements.txt` | Python dependencies |
 | `PROGRESS.md` | Running log of changes and additions |
@@ -47,8 +49,10 @@ python server.py
 ## API Endpoints
 | Method | Path | Body | Response |
 |--------|------|------|----------|
+| GET | `/` | — | Chat UI (HTML, mobile-friendly) |
 | GET | `/health` | — | `{"status": "ok"}` |
 | POST | `/ask` | `{"question": "..."}` | `{"answer": "..."}` |
+| POST | `/reset` | — | `{"status": "conversation cleared"}` |
 
 ## Environment Variables (`.env`)
 ```

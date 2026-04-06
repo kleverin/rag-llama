@@ -5,3 +5,7 @@ data/
 __pycache__/
 *.pyc
 .DS_Store
+
+.vscode/browse.vc.db
+.vscode/browse.vc.db-shm
+.vscode/browse.vc.db-wal

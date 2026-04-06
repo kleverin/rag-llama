@@ -8,3 +8,6 @@ uvicorn[standard]
 pandas
 openpyxl
 python-dotenv
+librosa
+numpy
+scipy

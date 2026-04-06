@@ -20,6 +20,43 @@ def row_to_text(row: pd.Series, sheet_name: str) -> str:
     return " | ".join(parts)
 
 
+def load_wav_documents():
+    from llama_index.core import Document
+    from audio_processing import process_wav
+
+    data_dir = pathlib.Path(DATA_PATH)
+    wav_files = sorted(data_dir.rglob("*.wav"))
+
+    if not wav_files:
+        print("No .wav files found — skipping audio ingestion.")
+        return []
+
+    print(f"Found {len(wav_files)} WAV file(s)")
+    documents = []
+
+    for file_path in wav_files:
+        print(f"\nProcessing: {file_path.name}")
+        try:
+            result = process_wav(str(file_path))
+        except Exception as e:
+            print(f"  WARNING: Could not process {file_path.name}: {e}")
+            continue
+
+        doc = Document(
+            text=result["rag_chunk"],
+            metadata={
+                "source": result["file"],
+                "timestamp": result["timestamp"],
+                "fault_flag": str(result["fault_flag"]),
+                "type": "audio",
+            },
+        )
+        documents.append(doc)
+
+    print(f"\nTotal audio documents prepared: {len(documents)}")
+    return documents
+
+
 def load_excel_documents():
     from llama_index.core import Document
 
@@ -70,6 +107,7 @@ def main():
 
     print("=== Starting ingestion ===")
     documents = load_excel_documents()
+    documents += load_wav_documents()
 
     print("\nInitializing embedding model (nomic-embed-text via Ollama)...")
     from llama_index.embeddings.ollama import OllamaEmbedding
