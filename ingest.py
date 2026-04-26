@@ -1,150 +1,275 @@
+"""
+ingest.py — RAG Pipeline Ingestion
+====================================
+Reads .md knowledge base files, .xlsx MTConnect data, and .wav audio files,
+embeds everything into ChromaDB via LlamaIndex + Ollama.
+
+Run:
+    source iiot/bin/activate
+    python ingest.py
+"""
+
 import os
 import sys
-import shutil
-import pathlib
 import pandas as pd
 from dotenv import load_dotenv
 
+from llama_index.core import VectorStoreIndex, Document, StorageContext, Settings
+from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.llms.ollama import Ollama
+import chromadb
+
+from audio_processing import process_wav
+
 load_dotenv()
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
-DATA_PATH = os.getenv("DATA_PATH", "./data")
+OLLAMA_BASE_URL  = os.getenv("OLLAMA_BASE_URL",  "http://localhost:11434")
+CHROMA_PATH      = os.getenv("CHROMA_PATH",      "./chroma_db")
+DATA_PATH        = os.getenv("DATA_PATH",         "./data")
+KB_PATH          = os.getenv("KB_PATH",           "./")
+CSV_SAMPLE_EVERY = int(os.getenv("CSV_SAMPLE_EVERY", "60"))  # keep 1 row per N rows
+
+print(f"[config]  DATA_PATH        = {DATA_PATH}")
+print(f"[config]  KB_PATH          = {KB_PATH}")
+print(f"[config]  CHROMA_PATH      = {CHROMA_PATH}")
+print(f"[config]  OLLAMA URL       = {OLLAMA_BASE_URL}")
+print(f"[config]  CSV_SAMPLE_EVERY = {CSV_SAMPLE_EVERY} rows")
+
+Settings.llm = Ollama(model="llama3.2", base_url=OLLAMA_BASE_URL, request_timeout=120.0)
+Settings.embed_model = OllamaEmbedding(model_name="nomic-embed-text", base_url=OLLAMA_BASE_URL)
 
 
-def row_to_text(row: pd.Series, sheet_name: str) -> str:
-    parts = [f"Sheet: {sheet_name}"]
-    for col, val in row.items():
-        if pd.notna(val) and str(val).strip():
-            parts.append(f"{col}: {val}")
-    return " | ".join(parts)
+# ─────────────────────────────────────────────────────────────────────────────
+# KNOWLEDGE BASE LOADER
+# ─────────────────────────────────────────────────────────────────────────────
 
+def load_knowledge_base_documents(kb_dir: str) -> list:
+    """
+    Load all .md and .txt files from kb_dir.
+    Splits on '---' separators so each diagnostic section becomes its own chunk.
+    """
+    docs     = []
+    kb_files = [f for f in os.listdir(kb_dir) if f.endswith(".md") or f.endswith(".txt")]
 
-def load_wav_documents():
-    from llama_index.core import Document
-    from audio_processing import process_wav
+    if not kb_files:
+        print(f"  [kb]  No knowledge base files found in {kb_dir}")
+        return docs
 
-    data_dir = pathlib.Path(DATA_PATH)
-    wav_files = sorted(data_dir.rglob("*.wav"))
-
-    if not wav_files:
-        print("No .wav files found — skipping audio ingestion.")
-        return []
-
-    print(f"Found {len(wav_files)} WAV file(s)")
-    documents = []
-
-    for file_path in wav_files:
-        print(f"\nProcessing: {file_path.name}")
+    for fname in sorted(kb_files):
+        fpath = os.path.join(kb_dir, fname)
         try:
-            result = process_wav(str(file_path))
-        except Exception as e:
-            print(f"  WARNING: Could not process {file_path.name}: {e}")
-            continue
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
 
-        doc = Document(
-            text=result["rag_chunk"],
-            metadata={
-                "source": result["file"],
-                "timestamp": result["timestamp"],
-                "fault_flag": str(result["fault_flag"]),
-                "type": "audio",
-            },
-        )
-        documents.append(doc)
-
-    print(f"\nTotal audio documents prepared: {len(documents)}")
-    return documents
-
-
-def load_excel_documents():
-    from llama_index.core import Document
-
-    data_dir = pathlib.Path(DATA_PATH)
-    xlsx_files = sorted(data_dir.rglob("*.xlsx"))
-
-    if not xlsx_files:
-        print(f"No .xlsx files found under {DATA_PATH}")
-        sys.exit(1)
-
-    print(f"Found {len(xlsx_files)} Excel file(s)")
-    documents = []
-
-    for file_path in xlsx_files:
-        print(f"\nReading: {file_path.name}")
-        try:
-            sheets = pd.read_excel(file_path, sheet_name=None, dtype=str)
-        except Exception as e:
-            print(f"  WARNING: Could not read {file_path.name}: {e}")
-            continue
-
-        for sheet_name, df in sheets.items():
-            df = df.dropna(how="all")
-            print(f"  Sheet '{sheet_name}': {len(df)} rows")
-            for row_idx, row in df.iterrows():
-                text = row_to_text(row, sheet_name)
-                if not text.strip():
-                    continue
-                doc = Document(
-                    text=text,
-                    metadata={
-                        "source": file_path.name,
-                        "sheet": str(sheet_name),
-                        "row": int(row_idx),
-                    },
+            sections = [s.strip() for s in content.split("\n---\n") if s.strip()]
+            for i, section in enumerate(sections):
+                lines = section.split("\n")
+                title = next(
+                    (l.lstrip("#").strip() for l in lines if l.startswith("##")),
+                    f"{fname} section {i+1}"
                 )
-                documents.append(doc)
+                docs.append(Document(
+                    text=section,
+                    metadata={"source": fname, "type": "knowledge_base", "section": title}
+                ))
+            print(f"  [kb]  {fname} — {len(sections)} sections")
 
-    print(f"\nTotal documents (rows) prepared: {len(documents)}")
-    return documents
+        except Exception as e:
+            print(f"  [ERROR] {fpath}: {e}")
+
+    return docs
 
 
-def main():
-    if pathlib.Path(CHROMA_PATH).exists():
-        print(f"ChromaDB already exists at '{CHROMA_PATH}'. Skipping ingestion.")
-        print("Delete the chroma_db/ folder to re-ingest.")
-        return
+# ─────────────────────────────────────────────────────────────────────────────
+# MTCONNECT EXCEL LOADER
+# ─────────────────────────────────────────────────────────────────────────────
 
-    print("=== Starting ingestion ===")
-    documents = load_excel_documents()
-    documents += load_wav_documents()
+def row_to_text(row: pd.Series) -> str:
+    """Convert one MTConnect Excel row to natural-language text."""
+    def g(col, default="N/A"):
+        return row.get(col, default)
 
-    print("\nInitializing embedding model (nomic-embed-text via Ollama)...")
-    from llama_index.embeddings.ollama import OllamaEmbedding
-    from llama_index.vector_stores.chroma import ChromaVectorStore
-    from llama_index.core import VectorStoreIndex, StorageContext
-    import chromadb
+    flags = []
+    try:
+        if float(g("MS1load", 0)) > 80:
+            flags.append("HIGH-SPINDLE-LOAD")
+        if float(g("MS1load", 0)) > 95:
+            flags.append("SPINDLE-OVERLOAD")
+    except Exception:
+        pass
+    for ax, col in [("X", "MX1load"), ("Y", "MY1load"), ("Z", "MZ1load")]:
+        try:
+            if abs(float(g(col, 0))) > 70:
+                flags.append(f"HIGH-{ax}-AXIS-LOAD")
+        except Exception:
+            pass
+    if str(g("Mestop")).upper() == "TRIGGERED":
+        flags.append("ESTOP-TRIGGERED")
 
-    embed_model = OllamaEmbedding(
-        model_name="nomic-embed-text",
-        base_url=OLLAMA_BASE_URL,
-        request_timeout=120.0,
+    flag_str = " | FLAGS: " + ", ".join(flags) if flags else ""
+
+    return (
+        f"[MTCONNECT]{flag_str} At {g('timestamp')}: "
+        f"execution={g('Mpexecution')}, mode={g('MS1Mode')}, estop={g('Mestop')}, "
+        f"spindle speed={g('MS1speed')} RPM (override={g('MS1ovr')}%), "
+        f"spindle load={g('MS1load')}%, "
+        f"active tool={g('Mp1CurrentTool')}, program={g('Mpprogram')}, "
+        f"part count={g('Mppartcount')}, "
+        f"position X={g('MX1actm')} Y={g('MY1actm')} Z={g('MZ1actm')}, "
+        f"axis load X={g('MX1load')}% Y={g('MY1load')}% Z={g('MZ1load')}%, "
+        f"B-axis position={g('B1actm')} load={g('B1load')}%, "
+        f"feedrate actual={g('Mp1Fact')} commanded={g('Mp1Fcmd')} "
+        f"(override={g('MpFovr')}%), "
+        f"program line={g('Mp1line')} block={g('Mp1block')}."
     )
 
-    print(f"Initializing ChromaDB at '{CHROMA_PATH}'...")
-    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-    chroma_collection = chroma_client.get_or_create_collection("rag_collection")
 
-    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
-    print("Embedding and indexing documents (this may take a while)...")
+def load_csv_documents(csv_path: str, sample_every: int = 60) -> list:
+    docs = []
     try:
-        VectorStoreIndex.from_documents(
-            documents,
-            storage_context=storage_context,
-            embed_model=embed_model,
-            show_progress=True,
-        )
+        df = pd.read_csv(csv_path)
+        df.columns = [c.strip() for c in df.columns]
+        df = df.iloc[::sample_every].reset_index(drop=True)
+        print(f"  [csv]   {os.path.basename(csv_path)} — {len(df)} rows (1 per {sample_every}s)")
+        for _, row in df.iterrows():
+            docs.append(Document(
+                text=row_to_text(row),
+                metadata={
+                    "source":    os.path.basename(csv_path),
+                    "type":      "mtconnect",
+                    "timestamp": str(row.get("timestamp", "")),
+                    "tool":      str(row.get("Mp1CurrentTool", "")),
+                    "execution": str(row.get("Mpexecution", "")),
+                    "load":      str(row.get("MS1load", "")),
+                    "estop":     str(row.get("Mestop", "")),
+                }
+            ))
     except Exception as e:
-        print(f"\nERROR during embedding: {e}")
-        print(f"Cleaning up partial chroma_db at '{CHROMA_PATH}'...")
-        shutil.rmtree(CHROMA_PATH, ignore_errors=True)
-        print("Deleted. Fix the error above, then re-run ingest.py.")
-        sys.exit(1)
+        print(f"  [ERROR] {csv_path}: {e}")
+    return docs
 
-    print(f"\n=== Ingestion complete! Vectors stored at '{CHROMA_PATH}' ===")
+
+def load_xlsx_documents(xlsx_path: str) -> list:
+    docs = []
+    try:
+        df = pd.read_excel(xlsx_path, engine="openpyxl")
+        df.columns = [c.strip() for c in df.columns]
+        print(f"  [xlsx]  {os.path.basename(xlsx_path)} — {len(df)} rows")
+        for _, row in df.iterrows():
+            docs.append(Document(
+                text=row_to_text(row),
+                metadata={
+                    "source":    os.path.basename(xlsx_path),
+                    "type":      "mtconnect",
+                    "timestamp": str(row.get("timestamp", "")),
+                    "tool":      str(row.get("Mp1CurrentTool", "")),
+                    "execution": str(row.get("Mpexecution", "")),
+                    "load":      str(row.get("MS1load", "")),
+                    "estop":     str(row.get("Mestop", "")),
+                }
+            ))
+    except Exception as e:
+        print(f"  [ERROR] {xlsx_path}: {e}")
+    return docs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUDIO LOADER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def audio_features_to_document(features: dict) -> Document:
+    return Document(
+        text=features["rag_chunk"],
+        metadata={
+            "source":    features["file"],
+            "type":      "audio",
+            "timestamp": features["timestamp"],
+            "severity":  features["severity"],
+            "fault":     str(features["fault_flag"]),
+            "rms":       str(round(features["rms"], 4)),
+            "kurtosis":  str(round(features["kurtosis"], 3)),
+            "dom_freq":  str(round(features["dominant_freq_hz"], 1)),
+        }
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ingest():
+    documents = []
+
+    # 1. Knowledge base
+    print(f"\n── Loading Knowledge Base ─────────────────────────────────")
+    kb_docs = load_knowledge_base_documents(KB_PATH)
+    documents.extend(kb_docs)
+    print(f"  -> {len(kb_docs)} knowledge base chunks")
+
+    # 2. Scan data directory
+    xlsx_files, csv_files, wav_files = [], [], []
+    for root, dirs, files in os.walk(DATA_PATH):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            if fname.lower().endswith(".xlsx"):
+                xlsx_files.append(fpath)
+            elif fname.lower().endswith(".csv"):
+                csv_files.append(fpath)
+            elif fname.lower().endswith(".wav"):
+                wav_files.append(fpath)
+
+    print(f"\n[scan]  {len(xlsx_files)} Excel files, {len(csv_files)} CSV files, {len(wav_files)} WAV files")
+
+    # 3. Excel / MTConnect
+    print(f"\n── Ingesting Excel files ──────────────────────────────────")
+    for p in sorted(xlsx_files):
+        docs = load_xlsx_documents(p)
+        documents.extend(docs)
+
+    # 4. CSV / MTConnect (sampled)
+    print(f"\n── Ingesting CSV files (every {CSV_SAMPLE_EVERY} rows) ────────────────────")
+    for p in sorted(csv_files):
+        docs = load_csv_documents(p, sample_every=CSV_SAMPLE_EVERY)
+        documents.extend(docs)
+
+    # 5. WAV / Audio
+    print(f"\n── Ingesting WAV files ────────────────────────────────────")
+    faults, warnings = 0, 0
+    for wav_path in sorted(wav_files):
+        try:
+            features = process_wav(wav_path)
+            documents.append(audio_features_to_document(features))
+            sev = features["severity"]
+            if sev == "fault":    faults += 1
+            elif sev == "warning": warnings += 1
+            print(f"  [{sev.upper():7s}]  {os.path.basename(wav_path)}")
+            if sev in ("warning", "fault"):
+                for obs in features["observations"]:
+                    print(f"             -> {obs[:120]}")
+        except Exception as e:
+            print(f"  [ERROR]   {os.path.basename(wav_path)} — {e}")
+
+    print(f"\n[audio]  {faults} fault(s), {warnings} warning(s) found during ingest")
+
+    # 6. Build ChromaDB index
+    print(f"\n── Building index ({len(documents)} documents) ────────────")
+    chroma_client     = chromadb.PersistentClient(path=CHROMA_PATH)
+    chroma_collection = chroma_client.get_or_create_collection("iiot_rag")
+    vector_store      = ChromaVectorStore(chroma_collection=chroma_collection)
+    storage_context   = StorageContext.from_defaults(vector_store=vector_store)
+
+    VectorStoreIndex.from_documents(
+        documents,
+        storage_context=storage_context,
+        show_progress=True,
+    )
+
+    print(f"\n[done]  {len(documents)} documents embedded into {CHROMA_PATH}")
+    print(f"[done]  {len(kb_docs)} diagnostic knowledge base chunks always available")
+    print("[done]  Run 'python server.py' to start the API")
 
 
 if __name__ == "__main__":
-    main()
+    ingest()

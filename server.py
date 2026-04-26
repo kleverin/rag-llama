@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     from llama_index.core import VectorStoreIndex, StorageContext
 
     chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-    chroma_collection = chroma_client.get_or_create_collection("rag_collection")
+    chroma_collection = chroma_client.get_or_create_collection("iiot_rag")
 
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
