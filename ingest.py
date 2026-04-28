@@ -10,7 +10,9 @@ Run:
 """
 
 import os
+import re
 import sys
+from datetime import datetime
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -82,25 +84,71 @@ def load_knowledge_base_documents(kb_dir: str) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MTCONNECT EXCEL LOADER
+# HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def row_to_text(row: pd.Series) -> str:
-    """Convert one MTConnect Excel row to natural-language text."""
+def _readable_ts(ts_str: str) -> str:
+    """'2025-04-28 06:06:00' → 'April 28, 2025 at 06:06 AM'"""
+    try:
+        dt = datetime.fromisoformat(str(ts_str).strip())
+        return dt.strftime("%B %d, %Y at %I:%M %p").replace(" 0", " ")
+    except Exception:
+        return str(ts_str)
+
+
+def _parse_shift_filename(filename: str) -> tuple:
+    """
+    Extract (date_str, shift_str) from shift report filenames, e.g.:
+      'Shift Report 4-28-25 Day Shift (7).xlsx'   → ('April 28, 2025', 'Day')
+      'Shift Report 4-28-2025 Nights (7).xlsx'    → ('April 28, 2025', 'Night')
+    """
+    m = re.search(r"(\d{1,2})-(\d{1,2})-(\d{2,4})", str(filename))
+    if m:
+        month, day, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if year < 100:
+            year += 2000
+        try:
+            date_str = datetime(year, month, day).strftime("%B %d, %Y")
+        except Exception:
+            date_str = f"{month}/{day}/{year}"
+    else:
+        date_str = "unknown date"
+
+    fn_lower = str(filename).lower()
+    if "night" in fn_lower:
+        shift_str = "Night"
+    elif "day" in fn_lower:
+        shift_str = "Day"
+    else:
+        shift_str = "unknown"
+
+    return date_str, shift_str
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MTCONNECT CSV LOADER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _mtconnect_row_to_text(row: pd.Series) -> str:
+    """Convert one MTConnect CSV row to natural-language text with readable timestamp."""
     def g(col, default="N/A"):
         return row.get(col, default)
 
+    ts_raw  = str(g("timestamp"))
+    ts_human = _readable_ts(ts_raw)
+
     flags = []
     try:
-        if float(g("MS1load", 0)) > 80:
+        load_val = float(g("MS1load", 0) or 0)
+        if load_val > 80:
             flags.append("HIGH-SPINDLE-LOAD")
-        if float(g("MS1load", 0)) > 95:
+        if load_val > 95:
             flags.append("SPINDLE-OVERLOAD")
     except Exception:
         pass
     for ax, col in [("X", "MX1load"), ("Y", "MY1load"), ("Z", "MZ1load")]:
         try:
-            if abs(float(g(col, 0))) > 70:
+            if abs(float(g(col, 0) or 0)) > 70:
                 flags.append(f"HIGH-{ax}-AXIS-LOAD")
         except Exception:
             pass
@@ -110,7 +158,7 @@ def row_to_text(row: pd.Series) -> str:
     flag_str = " | FLAGS: " + ", ".join(flags) if flags else ""
 
     return (
-        f"[MTCONNECT]{flag_str} At {g('timestamp')}: "
+        f"[MTCONNECT]{flag_str} On {ts_human} (timestamp {ts_raw}): "
         f"execution={g('Mpexecution')}, mode={g('MS1Mode')}, estop={g('Mestop')}, "
         f"spindle speed={g('MS1speed')} RPM (override={g('MS1ovr')}%), "
         f"spindle load={g('MS1load')}%, "
@@ -134,7 +182,7 @@ def load_csv_documents(csv_path: str, sample_every: int = 60) -> list:
         print(f"  [csv]   {os.path.basename(csv_path)} — {len(df)} rows (1 per {sample_every}s)")
         for _, row in df.iterrows():
             docs.append(Document(
-                text=row_to_text(row),
+                text=_mtconnect_row_to_text(row),
                 metadata={
                     "source":    os.path.basename(csv_path),
                     "type":      "mtconnect",
@@ -150,25 +198,221 @@ def load_csv_documents(csv_path: str, sample_every: int = 60) -> list:
     return docs
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EXCEL SHEET HANDLERS — natural language per sheet type
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MTCONNECT_COLS = {"MS1load", "Mpexecution", "MS1speed", "MS1Mode", "Mestop"}
+
+# Sheets that are redundant or too noisy to ingest as-is
+_SKIP_SHEETS = {
+    "Shift_Metrics_Wide",    # duplicate of Long + RAG_Text
+    "Shift_Metrics_Long",    # covered by RAG_Text
+    "Shift_Long_Enriched",   # same as Long
+    "Part_Job_Enriched",     # 131-col join, too noisy — Part_Details is cleaner
+    "Job_Orders",            # job master without shift context
+    "Failed_Files",          # empty
+}
+
+
+def _employees_sheet_to_docs(df: pd.DataFrame, xlsx_path: str) -> list:
+    """
+    Group employees by shift file → one natural-language document per shift,
+    listing all employees who worked that shift.
+    """
+    docs  = []
+    df    = df.dropna(how="all")
+    cols  = {c.strip().lower(): c for c in df.columns}
+    emp_c = cols.get("employee_name") or cols.get("employee name")
+    src_c = cols.get("source_file")
+    if not emp_c or not src_c:
+        return docs
+
+    for src_file, grp in df.groupby(src_c):
+        date_str, shift_str = _parse_shift_filename(src_file)
+        names = [str(n).strip() for n in grp[emp_c].dropna()
+                 if str(n).strip() not in ("", "nan")]
+        if not names:
+            continue
+        text = (
+            f"Employees who worked the {shift_str} shift on {date_str}: "
+            + ", ".join(names) + ". "
+            f"(Source file: {src_file})"
+        )
+        docs.append(Document(
+            text=text,
+            metadata={
+                "source": os.path.basename(xlsx_path),
+                "sheet":  "Employees",
+                "type":   "employees",
+                "date":   date_str,
+                "shift":  shift_str,
+            }
+        ))
+    return docs
+
+
+def _part_details_row_to_text(row: pd.Series) -> str:
+    date   = str(row.get("date", ""))[:10]
+    shift  = str(row.get("shift", ""))
+    wc     = str(row.get("work_center", ""))
+    part   = str(row.get("part_number", ""))
+    job    = str(row.get("job_order", ""))
+    status = str(row.get("job_status", ""))
+    qty    = row.get("routing_qty", None)
+    good   = row.get("good", None)
+
+    # Skip header-repeat rows
+    if part in ("Part #", "Part Number", "nan") or job in ("Job Order", "nan"):
+        return ""
+
+    qty_str  = f" Routing quantity: {int(qty)}." if pd.notna(qty) else ""
+    good_str = f" Good parts produced: {int(good)}." if pd.notna(good) else ""
+
+    try:
+        date_human = _readable_ts(date + " 00:00:00").split(" at ")[0]
+    except Exception:
+        date_human = date
+
+    return (
+        f"On {date_human} during the {shift} shift, work center {wc} ran "
+        f"part number {part} under job order {job} (status: {status}).{qty_str}{good_str}"
+    )
+
+
+def _machine_summary_row_to_text(row: pd.Series) -> str:
+    date  = str(row.get("date", ""))[:10]
+    shift = str(row.get("shift", ""))
+    wc    = str(row.get("work_center", ""))
+    util  = row.get("avg_utilization_percent", None)
+    qty   = row.get("total_quantity", None)
+
+    try:
+        date_human = _readable_ts(date + " 00:00:00").split(" at ")[0]
+    except Exception:
+        date_human = date
+
+    util_str = f"{util:.1f}%" if pd.notna(util) else "N/A"
+    qty_str  = f" Total parts produced: {int(qty)}." if pd.notna(qty) else ""
+
+    return (
+        f"Work center {wc} had an average utilization of {util_str} "
+        f"on the {shift} shift on {date_human}.{qty_str}"
+    )
+
+
+def _date_shift_summary_row_to_text(row: pd.Series) -> str:
+    date  = str(row.get("date", ""))[:10]
+    shift = str(row.get("shift", ""))
+    util  = row.get("avg_utilization_percent", None)
+    qty   = row.get("total_quantity", None)
+    wcs   = row.get("unique_work_centers", None)
+
+    try:
+        date_human = _readable_ts(date + " 00:00:00").split(" at ")[0]
+    except Exception:
+        date_human = date
+
+    util_str = f"{util:.1f}%" if pd.notna(util) else "N/A"
+    qty_str  = f", {int(qty)} total parts" if pd.notna(qty) else ""
+    wc_str   = f" across {int(wcs)} work centers" if pd.notna(wcs) else ""
+
+    return (
+        f"On {date_human}, the {shift} shift had overall utilization of "
+        f"{util_str}{qty_str}{wc_str}."
+    )
+
+
+def _rag_text_row_to_text(row: pd.Series) -> str:
+    """The RAG_Text sheet already has a pre-formatted text column — use it directly."""
+    return str(row.get("text", "")).strip()
+
+
+def _shift_times_row_to_text(row: pd.Series) -> str:
+    date  = str(row.get("date", ""))[:10]
+    shift = str(row.get("shift", ""))
+    start = str(row.get("shift_start", ""))
+    end   = str(row.get("shift_end", ""))
+    wc    = str(row.get("work_center", ""))
+    util  = row.get("summary_avg_utilization_percent", None)
+    qty   = row.get("summary_total_quantity", None)
+
+    try:
+        date_human  = _readable_ts(date + " 00:00:00").split(" at ")[0]
+        start_human = _readable_ts(start).split("at ")[-1] if start != "nan" else "?"
+        end_human   = _readable_ts(end).split("at ")[-1]   if end   != "nan" else "?"
+    except Exception:
+        date_human, start_human, end_human = date, start, end
+
+    util_str = f" Utilization: {util:.1f}%." if pd.notna(util) else ""
+    qty_str  = f" Quantity produced: {int(qty)}." if pd.notna(qty) else ""
+
+    return (
+        f"On {date_human}, the {shift} shift ran from {start_human} to {end_human} "
+        f"at work center {wc}.{util_str}{qty_str}"
+    )
+
+
 def load_xlsx_documents(xlsx_path: str) -> list:
     docs = []
     try:
-        df = pd.read_excel(xlsx_path, engine="openpyxl")
-        df.columns = [c.strip() for c in df.columns]
-        print(f"  [xlsx]  {os.path.basename(xlsx_path)} — {len(df)} rows")
-        for _, row in df.iterrows():
-            docs.append(Document(
-                text=row_to_text(row),
-                metadata={
-                    "source":    os.path.basename(xlsx_path),
-                    "type":      "mtconnect",
-                    "timestamp": str(row.get("timestamp", "")),
-                    "tool":      str(row.get("Mp1CurrentTool", "")),
-                    "execution": str(row.get("Mpexecution", "")),
-                    "load":      str(row.get("MS1load", "")),
-                    "estop":     str(row.get("Mestop", "")),
-                }
-            ))
+        sheets = pd.read_excel(xlsx_path, sheet_name=None, engine="openpyxl")
+        for sheet_name, df in sheets.items():
+            # Normalise column names for matching; keep originals in df
+            norm = sheet_name.strip().replace(" ", "_")
+            if norm in _SKIP_SHEETS:
+                print(f"  [xlsx]  {os.path.basename(xlsx_path)} / '{sheet_name}' — skipped (redundant)")
+                continue
+
+            df.columns = [c.strip() for c in df.columns]
+            df = df.dropna(how="all")
+
+            # ── Sheet-specific handlers ───────────────────────────────────
+            if norm == "Employees":
+                sheet_docs = _employees_sheet_to_docs(df, xlsx_path)
+                print(f"  [xlsx]  {os.path.basename(xlsx_path)} / '{sheet_name}' — "
+                      f"{len(sheet_docs)} shift groups")
+                docs.extend(sheet_docs)
+                continue
+
+            # Generic row-level handlers
+            row_fn   = None
+            doc_type = "job_data"
+
+            if norm == "Part_Details":
+                row_fn = _part_details_row_to_text
+            elif norm == "Machine_Shift_Summary":
+                row_fn = _machine_summary_row_to_text
+            elif norm == "Date_Shift_Summary":
+                row_fn = _date_shift_summary_row_to_text
+            elif norm == "RAG_Text":
+                row_fn = _rag_text_row_to_text
+            elif norm == "Sheet1":   # file_with_utc_shift_times_Ar.xlsx
+                row_fn = _shift_times_row_to_text
+            elif bool(_MTCONNECT_COLS & set(df.columns)):
+                row_fn   = lambda row: _mtconnect_row_to_text(row)
+                doc_type = "mtconnect"
+
+            if row_fn is None:
+                # Fallback: skip sheets we have no handler for
+                print(f"  [xlsx]  {os.path.basename(xlsx_path)} / '{sheet_name}' — skipped (no handler)")
+                continue
+
+            count = 0
+            for _, row in df.iterrows():
+                text = row_fn(row)
+                if not text:
+                    continue
+                docs.append(Document(
+                    text=text,
+                    metadata={
+                        "source": os.path.basename(xlsx_path),
+                        "sheet":  sheet_name,
+                        "type":   doc_type,
+                    }
+                ))
+                count += 1
+            print(f"  [xlsx]  {os.path.basename(xlsx_path)} / '{sheet_name}' — {count} docs")
     except Exception as e:
         print(f"  [ERROR] {xlsx_path}: {e}")
     return docs

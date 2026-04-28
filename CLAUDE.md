@@ -23,6 +23,7 @@ source iiot/bin/activate
 |------|---------|
 | `ingest.py` | Loads `.md` KB, `.xlsx`, sampled `.csv`, and `.wav` files from `data/`, embeds into ChromaDB |
 | `server.py` | FastAPI server — loads ChromaDB (`iiot_rag`), exposes `/ask`, `/health`, `/reset`, chat UI at `/` |
+| `benchmark.py` | RAG accuracy benchmark — 21 eval questions grounded in real CSV/Excel data, scores by keyword match, saves JSON report |
 | `audio_processing.py` | Full 10-feature WAV pipeline — load/normalize → extract features → interpret → RAG chunk |
 | `mb4000_troubleshooting.md` | Diagnostic knowledge base for MB4000 CNC machine — ingested automatically |
 | `.env` | Runtime config (OLLAMA_BASE_URL, CHROMA_PATH, DATA_PATH, KB_PATH, CSV_SAMPLE_EVERY, PORT) |
@@ -47,6 +48,9 @@ python ingest.py
 
 # Start the server
 python server.py
+
+# Benchmark RAG accuracy (no server needed)
+python benchmark.py --verbose
 ```
 
 ## API Endpoints
@@ -96,9 +100,24 @@ Fault flag: kurtosis > 4.0 AND crest factor > 5.0
 ## Ingest Pipeline (ingest.py)
 Processes four data types in order:
 1. `.md` / `.txt` files from `KB_PATH` — knowledge base (split on `---` separators)
-2. `.xlsx` files from `DATA_PATH` — MTConnect rows as natural-language documents with fault flags
+2. `.xlsx` files from `DATA_PATH` — sheet-specific natural-language text (see below)
 3. `.csv` files from `DATA_PATH` — sampled every `CSV_SAMPLE_EVERY` rows (default 60)
 4. `.wav` files from `DATA_PATH` — processed through `audio_processing.py`
+
+### Excel Sheet Handling
+Each sheet gets a dedicated text generator. Redundant sheets are skipped.
+
+| Sheet | Handler | Output format |
+|-------|---------|---------------|
+| `Employees` | `_employees_sheet_to_docs` | One doc per shift listing all employee names in plain English |
+| `Part_Details` | `_part_details_row_to_text` | `"On April 28, 2025 during the Day shift, work center MB4000 ran part 5387600-03..."` |
+| `Machine_Shift_Summary` | `_machine_summary_row_to_text` | `"Work center MB4000 had 76.4% utilization on the Day shift on April 28, 2025."` |
+| `Date_Shift_Summary` | `_date_shift_summary_row_to_text` | Shift-level utilization + quantity summary |
+| `RAG_Text` | `_rag_text_row_to_text` | Uses the pre-formatted `text` column directly |
+| `Sheet1` (shift times file) | `_shift_times_row_to_text` | `"On April 28, 2025, the Day shift ran from 10:00 AM to 8:30 PM at work center 5001."` |
+| Skipped | — | `Shift_Metrics_Wide`, `Shift_Metrics_Long`, `Shift_Long_Enriched`, `Part_Job_Enriched`, `Job_Orders`, `Failed_Files` |
+
+Timestamps are stored as both ISO (`2025-04-28 06:06:00`) and human-readable (`April 28, 2025 at 6:06 AM`) so embedding queries on either format work.
 
 ## Coding Conventions
 - Keep ingestion and serving as separate scripts (`ingest.py` / `server.py`)
