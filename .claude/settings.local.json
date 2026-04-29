@@ -13,7 +13,8 @@
       "Bash(python -c \"import json; nb=json.load\\(open\\('Report/Project Template_updated.ipynb'\\)\\); print\\(f'Total cells: {len\\(nb[\\\\\"cells\\\\\"]\\)}'\\); [print\\(f'[{i}] {c[\\\\\"cell_type\\\\\"]}: {str\\(c[\\\\\"source\\\\\"]\\)[:100]}'\\) for i,c in enumerate\\(nb['cells']\\)]\")",
       "Bash(python *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }

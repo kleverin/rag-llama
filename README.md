@@ -21,8 +21,13 @@ A local RAG (Retrieval-Augmented Generation) application for querying IIoT/manuf
 - Ingests four data types: `.md` knowledge base, `.xlsx`, sampled `.csv`, and `.wav` audio
 - MB4000 diagnostic knowledge base (`mb4000_troubleshooting.md`) always available as context
 - 10-feature acoustic analysis per WAV file with severity classification (`normal` / `warning` / `fault`)
-- MTConnect fault flags (HIGH-SPINDLE-LOAD, ESTOP-TRIGGERED, etc.) embedded into documents
+- MTConnect fault flags (HIGH-SPINDLE-LOAD, SPINDLE-OVERLOAD, ESTOP-TRIGGERED) always preserved regardless of sampling interval
+- Per-CSV program frequency summary injected at ingest time so "most common CNC program" queries resolve correctly
+- Fine-grained metadata types per Excel sheet (`part_details`, `machine_summary`, `shift_summary`, etc.) enabling precise filtered retrieval
+- Intelligent query routing in server: part/job queries → `parts_engine`, employee queries → `employee_engine`, audio queries → `audio_engine`
+- Custom QA prompt forces explicit value citation (part numbers, job orders, program names) instead of pronoun-only answers
 - CSV sampling — configurable row interval keeps large time-series manageable
+- `benchmark.py` — 16-question accuracy benchmark grounded in real data, scores by keyword match, saves JSON report
 
 ## Project Structure
 
@@ -36,7 +41,8 @@ rag-llama/
 ├── chroma_db/                     ← auto-generated after running ingest.py
 ├── iiot/                          ← Python virtual environment
 ├── ingest.py                      ← KB + Excel + CSV + WAV → ChromaDB pipeline
-├── server.py                      ← FastAPI server + chat UI
+├── server.py                      ← FastAPI server + chat UI + query routing
+├── benchmark.py                   ← 16-question RAG accuracy benchmark
 ├── audio_processing.py            ← WAV 10-feature extraction pipeline
 ├── mb4000_troubleshooting.md      ← MB4000 diagnostic knowledge base
 ├── requirements.txt
@@ -126,6 +132,13 @@ To force a full re-ingest, delete `chroma_db/` first:
 rm -rf chroma_db/
 python ingest.py
 ```
+
+**Step 2b — Run the accuracy benchmark (optional)**
+```bash
+python benchmark.py --verbose
+```
+
+Prints a per-category score report and saves a timestamped JSON result. No server needed.
 
 **Step 3 — Start the server**
 ```bash

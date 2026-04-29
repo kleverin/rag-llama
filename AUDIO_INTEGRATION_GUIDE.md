@@ -188,11 +188,12 @@ THRESHOLDS = {
 ## How ingest.py Works
 
 ### What it ingests
-`ingest.py` walks `DATA_PATH` and processes three types of data in order:
+`ingest.py` walks `DATA_PATH` and processes four types of data in order:
 
 1. **Knowledge base** (`.md` files in `KB_PATH`) — loaded first so diagnostic context always has high priority
-2. **MTConnect data** (`.xlsx` files) — each row becomes one document with natural-language text + metadata
-3. **Audio data** (`.wav` files) — each file is processed through `audio_processing.py` and embedded
+2. **Excel data** (`.xlsx` files) — each sheet dispatched to a dedicated handler; each row becomes one document tagged with a fine-grained `type` field (`part_details`, `machine_summary`, `shift_summary`, `employees`, etc.)
+3. **CSV / MTConnect data** — sampled every `CSV_SAMPLE_EVERY` rows, **plus** every row where `MS1load > 80%` or `Mestop == TRIGGERED` is always included regardless of the interval; a `[PROGRAM-SUMMARY]` document is also generated per CSV listing program frequency counts
+4. **Audio data** (`.wav` files) — each file is processed through `audio_processing.py` and embedded
 
 ### Running ingest
 

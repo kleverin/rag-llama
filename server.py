@@ -19,11 +19,31 @@ PORT = int(os.getenv("PORT", "8000"))
 chat_engine = None
 employee_engine = None
 audio_engine = None
+parts_engine = None
 
 _EMPLOYEE_KEYWORDS = {
     "employee", "employees", "worker", "workers",
     "who worked", "who was on", "who were on",
     "staff", "personnel", "worked the shift", "working the shift",
+}
+
+_QA_PROMPT_STR = (
+    "Context information is below.\n"
+    "---------------------\n"
+    "{context_str}\n"
+    "---------------------\n"
+    "Using only the context information, answer the query. "
+    "Always explicitly state the exact values, numbers, names, part numbers, job orders, "
+    "and program names from the context — never use a pronoun like 'it' or 'this program' "
+    "without also naming the specific value.\n"
+    "Query: {query_str}\n"
+    "Answer: "
+)
+
+_PARTS_KEYWORDS = {
+    "part number", "part #", "part no", "job order", "good parts",
+    "what part", "what job", "which part", "routing quantity",
+    "produced on the", "running on the", "work center ran",
 }
 
 _AUDIO_KEYWORDS = {
@@ -40,6 +60,11 @@ def _is_employee_query(question: str) -> bool:
     return any(kw in q for kw in _EMPLOYEE_KEYWORDS)
 
 
+def _is_parts_query(question: str) -> bool:
+    q = question.lower()
+    return any(kw in q for kw in _PARTS_KEYWORDS)
+
+
 def _is_audio_query(question: str) -> bool:
     q = question.lower()
     return any(kw in q for kw in _AUDIO_KEYWORDS)
@@ -47,7 +72,7 @@ def _is_audio_query(question: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global chat_engine, employee_engine, audio_engine
+    global chat_engine, employee_engine, audio_engine, parts_engine
 
     if not pathlib.Path(CHROMA_PATH).exists():
         raise RuntimeError(
@@ -85,7 +110,9 @@ async def lifespan(app: FastAPI):
         verbose=True,
     )
 
+    from llama_index.core import PromptTemplate
     from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
+    qa_tmpl = PromptTemplate(_QA_PROMPT_STR)
     employee_engine = index.as_query_engine(
         llm=llm,
         similarity_top_k=15,
@@ -96,8 +123,17 @@ async def lifespan(app: FastAPI):
     audio_engine = index.as_query_engine(
         llm=llm,
         similarity_top_k=20,
+        text_qa_template=qa_tmpl,
         filters=MetadataFilters(filters=[
             ExactMatchFilter(key="type", value="audio")
+        ]),
+    )
+    parts_engine = index.as_query_engine(
+        llm=llm,
+        similarity_top_k=15,
+        text_qa_template=qa_tmpl,
+        filters=MetadataFilters(filters=[
+            ExactMatchFilter(key="type", value="part_details")
         ]),
     )
 
@@ -1527,7 +1563,9 @@ def ask(body: Question):
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     if chat_engine is None:
         raise HTTPException(status_code=503, detail="Chat engine not ready")
-    if _is_employee_query(body.question):
+    if _is_parts_query(body.question):
+        response = parts_engine.query(body.question)
+    elif _is_employee_query(body.question):
         response = employee_engine.query(body.question)
     elif _is_audio_query(body.question):
         response = audio_engine.query(body.question)

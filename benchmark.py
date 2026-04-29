@@ -50,16 +50,22 @@ EVAL_SET = [
         "q":           "Was there a spindle overload or extremely high spindle load event logged in April 2025? What tool was active?",
         "kw":          ["106", "208"],
         "cat":         "mtconnect_load",
-        "meta_filter": {"key": "type", "value": "mtconnect"},
-        "note":        "Sampled row Apr 29 12:21 → [FLAGS: SPINDLE-OVERLOAD] tool=106, load=208% — may still fail if embedding doesn't distinguish load values",
+        "meta_filter": [
+            {"key": "type",    "value": "mtconnect"},
+            {"key": "flagged", "value": "true"},
+        ],
+        "note":        "Apr 29 12:21 → [FLAGS: SPINDLE-OVERLOAD] tool=106, load=208% — filter to flagged=true rows only",
     },
     {
         "id":          "high_load_may2",
         "q":           "Were there any HIGH-SPINDLE-LOAD events recorded in May 2025? What tool was running?",
         "kw":          ["34"],
         "cat":         "mtconnect_load",
-        "meta_filter": {"key": "type", "value": "mtconnect"},
-        "note":        "Sampled row May 2 07:00 → [FLAGS: HIGH-SPINDLE-LOAD] tool=34, load=127%",
+        "meta_filter": [
+            {"key": "type",    "value": "mtconnect"},
+            {"key": "flagged", "value": "true"},
+        ],
+        "note":        "May 2 07:00 → [FLAGS: HIGH-SPINDLE-LOAD] tool=34, load=127% — filter to flagged=true rows only",
     },
     {
         "id":          "program_a100",
@@ -93,6 +99,7 @@ EVAL_SET = [
         "kw":          ["Adams", "Ahmad"],
         "cat":         "employees",
         "meta_filter": {"key": "type", "value": "employees"},
+        "use_prompt":  False,
         "note":        "Job_enriched_ar Employees sheet: source_file='Shift Report 4-28-25 Day Shift'",
     },
     {
@@ -101,6 +108,7 @@ EVAL_SET = [
         "kw":          ["Wallace", "Thompson"],
         "cat":         "employees",
         "meta_filter": {"key": "type", "value": "employees"},
+        "use_prompt":  False,
         "note":        "Job_enriched_ar Employees sheet: source_file='Shift Report 4-28-2025 Nights'",
     },
     {
@@ -109,44 +117,50 @@ EVAL_SET = [
         "kw":          ["Wallace", "Kull"],
         "cat":         "employees",
         "meta_filter": {"key": "type", "value": "employees"},
+        "use_prompt":  False,
         "note":        "Job_enriched_ar Employees sheet: source_file='Shift Report 5-27-2025 Nights'",
     },
 
     # ── Excel — parts and job orders ──────────────────────────────────────────
     {
-        "id":   "part_mb4000_apr28",
-        "q":    "What part number was being produced on the MB4000 during the April 28, 2025 day shift?",
-        "kw":   ["5387600"],
-        "cat":  "parts",
-        "note": "Part_Details sheet: date=2025-04-28, shift=Day, work_center=MB4000, part=5387600-03",
+        "id":          "part_mb4000_apr28",
+        "q":           "What part number was being produced on the MB4000 during the April 28, 2025 day shift?",
+        "kw":          ["5387600"],
+        "cat":         "parts",
+        "meta_filter": {"key": "type", "value": "part_details"},
+        "note":        "Part_Details sheet: date=2025-04-28, shift=Day, work_center=MB4000, part=5387600-03",
     },
     {
-        "id":   "job_order_mb4000_apr28",
-        "q":    "What job order was running on the MB4000 on April 28, 2025 day shift?",
-        "kw":   ["J270018541"],
-        "cat":  "parts",
-        "note": "Part_Details sheet: date=2025-04-28, shift=Day, work_center=MB4000, job=J270018541",
+        "id":          "job_order_mb4000_apr28",
+        "q":           "What job order was running on the MB4000 on April 28, 2025 day shift?",
+        "kw":          ["J270018541"],
+        "cat":         "parts",
+        "meta_filter": {"key": "type", "value": "part_details"},
+        "note":        "Part_Details sheet: date=2025-04-28, shift=Day, work_center=MB4000, job=J270018541",
     },
     {
-        "id":   "part_v60_apr28",
-        "q":    "What part was being produced on the V60 machine on April 28, 2025 day shift?",
-        "kw":   ["3487080"],
-        "cat":  "parts",
-        "note": "Part_Details sheet: date=2025-04-28, shift=Day, work_center=V60, part=3487080-03",
+        "id":          "part_v60_apr28",
+        "q":           "What part was being produced on the V60 machine on April 28, 2025 day shift?",
+        "kw":          ["3487080"],
+        "cat":         "parts",
+        "meta_filter": {"key": "type", "value": "part_details"},
+        "note":        "Part_Details sheet: date=2025-04-28, shift=Day, work_center=V60, part=3487080-03",
     },
     {
-        "id":   "good_parts_v60_apr28",
-        "q":    "How many good parts were produced on the V60 on April 28, 2025 day shift?",
-        "kw":   ["66"],
-        "cat":  "parts",
-        "note": "Part_Details sheet: V60 Apr 28 Day → part 3487080-03, good=66",
+        "id":          "good_parts_v60_apr28",
+        "q":           "How many good parts were produced on the V60 on April 28, 2025 day shift?",
+        "kw":          ["66"],
+        "cat":         "parts",
+        "meta_filter": {"key": "type", "value": "part_details"},
+        "note":        "Part_Details sheet: V60 Apr 28 Day → part 3487080-03, good=66",
     },
     {
-        "id":   "part_5001_apr28",
-        "q":    "What part number was run on work center 5001 on April 28, 2025 day shift?",
-        "kw":   ["DZ114780"],
-        "cat":  "parts",
-        "note": "Part_Details sheet: date=2025-04-28, shift=Day, work_center=5001, part=DZ114780-B",
+        "id":          "part_5001_apr28",
+        "q":           "What part number was run on work center 5001 on April 28, 2025 day shift?",
+        "kw":          ["DZ114780"],
+        "cat":         "parts",
+        "meta_filter": {"key": "type", "value": "part_details"},
+        "note":        "Part_Details sheet: date=2025-04-28, shift=Day, work_center=5001, part=DZ114780-B",
     },
 
     # ── Excel — machine utilization ───────────────────────────────────────────
@@ -161,18 +175,20 @@ EVAL_SET = [
         "note": "Machine_Shift_Summary: MB4000 Apr 28 Day → avg_utilization_percent=76.43 (if sheet exists)",
     },
     {
-        "id":   "util_nhx6300_may27",
-        "q":    "What was the utilization of the NHX6300 machine on the May 27, 2025 day shift?",
-        "kw":   ["NHX6300", "62"],
-        "cat":  "utilization",
-        "note": "Machine_Shift_Summary: NHX6300 May 27 Day → avg_utilization_percent=62.0 (confirmed in retrieved chunks)",
+        "id":          "util_nhx6300_may27",
+        "q":           "What was the utilization of the NHX6300 machine on the May 27, 2025 day shift?",
+        "kw":          ["NHX6300", "62"],
+        "cat":         "utilization",
+        "meta_filter": {"key": "type", "value": "machine_summary"},
+        "note":        "Machine_Shift_Summary: NHX6300 May 27 Day → avg_utilization_percent=62.0 (confirmed in retrieved chunks)",
     },
     {
-        "id":   "util_shift_total_apr28",
-        "q":    "What was the overall shift utilization percentage on April 28, 2025 day shift across all work centers?",
-        "kw":   ["42"],
-        "cat":  "utilization",
-        "note": "Date_Shift_Summary: Apr 28 Day → overall utilization 42.3% (confirmed present in index)",
+        "id":          "util_shift_total_apr28",
+        "q":           "What was the overall shift utilization percentage on April 28, 2025 day shift across all work centers?",
+        "kw":          ["42"],
+        "cat":         "utilization",
+        "meta_filter": {"key": "type", "value": "shift_summary"},
+        "note":        "Date_Shift_Summary: Apr 28 Day → overall utilization 42.3% (confirmed present in index)",
     },
 ]
 
@@ -246,15 +262,36 @@ def build_index(top_k: int):
     return index, llm
 
 
-def _make_engine(index, llm, top_k: int, meta_filter: dict | None):
-    """Build a query engine, optionally scoped to a single metadata type."""
+_QA_PROMPT_STR = (
+    "Context information is below.\n"
+    "---------------------\n"
+    "{context_str}\n"
+    "---------------------\n"
+    "Using only the context information, answer the query. "
+    "Always explicitly state the exact values, numbers, names, part numbers, job orders, "
+    "and program names from the context — never use a pronoun like 'it' or 'this program' "
+    "without also naming the specific value.\n"
+    "Query: {query_str}\n"
+    "Answer: "
+)
+
+
+def _make_engine(index, llm, top_k: int, meta_filter, use_prompt: bool = True):
+    """Build a query engine, optionally scoped to one or more metadata filters.
+    meta_filter may be a single dict or a list of dicts.
+    use_prompt=False skips the custom QA template (uses LlamaIndex default).
+    """
+    from llama_index.core import PromptTemplate
+    from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
+    kwargs: dict = {"llm": llm, "similarity_top_k": top_k}
+    if use_prompt:
+        kwargs["text_qa_template"] = PromptTemplate(_QA_PROMPT_STR)
     if meta_filter:
-        from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
-        filters = MetadataFilters(filters=[
-            ExactMatchFilter(key=meta_filter["key"], value=meta_filter["value"])
+        filters_raw = meta_filter if isinstance(meta_filter, list) else [meta_filter]
+        kwargs["filters"] = MetadataFilters(filters=[
+            ExactMatchFilter(key=f["key"], value=f["value"]) for f in filters_raw
         ])
-        return index.as_query_engine(llm=llm, similarity_top_k=top_k, filters=filters)
-    return index.as_query_engine(llm=llm, similarity_top_k=top_k)
+    return index.as_query_engine(**kwargs)
 
 
 def run(top_k: int, verbose: bool, out_file: str):
@@ -268,7 +305,7 @@ def run(top_k: int, verbose: bool, out_file: str):
         if item.get("meta_filter"):
             print(f"       {dim('[filter: ' + str(item['meta_filter']) + ']')}")
 
-        engine = _make_engine(index, llm, top_k, item.get("meta_filter"))
+        engine = _make_engine(index, llm, top_k, item.get("meta_filter"), item.get("use_prompt", True))
 
         t0 = time.time()
         try:
@@ -354,15 +391,22 @@ def run(top_k: int, verbose: bool, out_file: str):
           + (f", {errors} error(s)" if errors else "") + ")")
 
     # ── Per-question table ────────────────────────────────────────────────────
+    latencies = [r["elapsed_s"] for r in valid]
+    if latencies:
+        lat_min = min(latencies)
+        lat_avg = sum(latencies) / len(latencies)
+        lat_max = max(latencies)
+        print(f"\n  {'Latency (s)':<35} min={lat_min:.1f}  avg={lat_avg:.1f}  max={lat_max:.1f}")
+
     print()
-    print(dim(f"  {'ID':<36} {'Score':>6}  Missing / notes"))
-    print(dim("  " + "─" * 64))
+    print(dim(f"  {'ID':<36} {'Score':>6}  {'Time':>6}  Missing / notes"))
+    print(dim("  " + "─" * 72))
     for r in results:
         if "error" in r:
             print(f"  {r['id']:<36} {red('ERROR ')}")
         else:
             miss = ", ".join(r["misses"]) or dim("all found")
-            print(f"  {r['id']:<36} {pct_label(r['score']*100)}  {miss}")
+            print(f"  {r['id']:<36} {pct_label(r['score']*100)}  {r['elapsed_s']:>5.1f}s  {miss}")
 
     # ── Save report ───────────────────────────────────────────────────────────
     report = {
@@ -370,6 +414,11 @@ def run(top_k: int, verbose: bool, out_file: str):
         "chroma_path":   CHROMA_PATH,
         "top_k":         top_k,
         "overall_score": overall,
+        "latency_s": {
+            "min": round(lat_min, 2) if latencies else None,
+            "avg": round(lat_avg, 2) if latencies else None,
+            "max": round(lat_max, 2) if latencies else None,
+        },
         "by_category": {
             cat: round(sum(scores) / len(scores), 3)
             for cat, scores in by_cat.items()

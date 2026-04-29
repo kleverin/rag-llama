@@ -1,5 +1,6 @@
 iiot/
 chroma_db/
+chroma_db_w/
 chroma_db_70k/
 chroma_db_backup/
 data/

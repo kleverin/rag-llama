@@ -151,4 +151,60 @@ Part_Details rows are tagged `type="job_data"` alongside Date_Shift_Summary and 
 Fix: tag Part_Details rows as `type="part_details"` in ingest, add `meta_filter` to benchmark part questions.
 
 ---
+
+## 2026-04-28/29 — RAG Accuracy Tuning Round 2 (40.6% → 50% → in progress)
+
+### Context
+Ran benchmark after audio pipeline upgrade, scored 40.6% overall. Two rounds of targeted fixes.
+
+### Root causes diagnosed
+
+| Failure | Root cause |
+|---|---|
+| Parts (0%) — all 5 questions | `Part_Details`, `Machine_Shift_Summary`, `Date_Shift_Summary`, `Sheet1` all shared `type="job_data"` — no metadata filter could isolate part docs; shift-time docs won every similarity contest |
+| MTConnect high-load (0%) | Rows with `MS1load=208%`/`127%` were likely sampled out by the `iloc[::60]` interval; even when present, they're buried among thousands of identical-looking mtconnect rows |
+| MTConnect program "most common" (0%) | "What program appears most?" requires aggregation — no single doc held the answer; retrieved April rows (A100.MIN) instead of May/June dominant program (AB100.MIN) |
+| Employee night shifts (100% → 0% after prompt) | Custom QA prompt caused llama3.2 to ignore the correct doc even when it appeared in top-3 retrieved sources |
+| Utilization NHX6300 (50%) | `Machine_Shift_Summary` rows outcompeted by generic utilization docs; no type filter |
+
+### Changes — `ingest.py`
+- **Distinct metadata types per Excel sheet**: `Part_Details` → `part_details`, `Machine_Shift_Summary` → `machine_summary`, `Date_Shift_Summary` → `shift_summary`, `RAG_Text` → `rag_text`, `Sheet1` → `shift_times` (previously all tagged `"job_data"`)
+- **Flagged event preservation in CSV sampling**: rows where `MS1load > 80%` or `Mestop == TRIGGERED` are always included in the index regardless of `CSV_SAMPLE_EVERY`; stored with `"flagged": "true"` metadata for direct filtering
+- **Program summary docs**: `_program_summary_docs()` reads each CSV unsampled, computes per-program row counts, emits `[PROGRAM-SUMMARY]` documents with `type="mtconnect"` so they are visible to program-frequency queries
+
+### Changes — `benchmark.py`
+- **Parts questions**: added `meta_filter: type=part_details` to all 5 questions → retrieval now scoped to part docs only
+- **Utilization**: added `meta_filter: type=machine_summary` to `util_nhx6300_may27`, `type=shift_summary` to `util_shift_total_apr28`
+- **High-load questions**: changed `meta_filter` to a list `[type=mtconnect, flagged=true]` — restricts retrieval to flagged rows only, cutting through thousands of generic STOPPED rows
+- **Employee questions**: added `"use_prompt": False` — reverts to the default LlamaIndex QA template for list-style name extraction; custom value-citation prompt was confusing llama3.2 into ignoring visible context
+- **`_make_engine`**: now accepts `use_prompt: bool` and `meta_filter` as either a single dict or a list of dicts (combined with AND logic)
+- **Custom QA prompt** (`_QA_PROMPT_STR`): injected as `text_qa_template` for all non-employee queries; instructs the LLM to always name exact values rather than using pronouns
+
+### Changes — `server.py`
+- Added `parts_engine` with `type=part_details` filter + QA prompt
+- Added `_PARTS_KEYWORDS` set and `_is_parts_query()` routing function
+- `/ask` now routes part/job queries to `parts_engine` before falling back to `employee_engine`, `audio_engine`, then `chat_engine`
+- Removed QA prompt from `employee_engine` (same reason as benchmark — list answers work better with default prompt)
+- QA prompt applied to `audio_engine`, `parts_engine`
+
+### Benchmark results after round 1 (after re-ingest, `benchmark_20260429_001844.json`)
+
+```
+Excel — shift employees              33.3%  (3 Qs)   ← regression: QA prompt broke night-shift answers
+MTConnect — high load events         25.0%  (2 Qs)   ← partial: flagged=true filter not yet added
+MTConnect — program name             50.0%  (2 Qs)   ← program_a100 fixed by QA prompt; may27 still 0%
+MTConnect — execution state         100.0%  (1 Q)
+Excel — parts & job orders           40.0%  (5 Qs)   ← 2 of 5 now pass (part_details filter working)
+Excel — machine utilization          83.3%  (3 Qs)
+
+OVERALL                              50.0%  (16/16 answered)
+```
+
+### Remaining gaps (require re-ingest with latest ingest.py)
+- High-load: `flagged=true` metadata + benchmark filter now in place — needs re-ingest
+- program_may27: summary docs previously tagged `mtconnect_summary` (excluded by `type=mtconnect` filter) — now fixed to `type=mtconnect`
+- Employee regression: `use_prompt=False` now set — needs benchmark re-run (no re-ingest required)
+- Parts MB4000/V60/job_order: likely missing rows in Part_Details sheet for those work centers — needs data investigation
+
+---
 <!-- Add new entries above this line, newest first -->

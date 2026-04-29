@@ -178,8 +178,16 @@ def load_csv_documents(csv_path: str, sample_every: int = 60) -> list:
     try:
         df = pd.read_csv(csv_path)
         df.columns = [c.strip() for c in df.columns]
-        df = df.iloc[::sample_every].reset_index(drop=True)
-        print(f"  [csv]   {os.path.basename(csv_path)} — {len(df)} rows (1 per {sample_every}s)")
+        flag_mask = pd.Series(False, index=df.index)
+        if "MS1load" in df.columns:
+            flag_mask |= pd.to_numeric(df["MS1load"], errors="coerce").fillna(0) > 80
+        if "Mestop" in df.columns:
+            flag_mask |= df["Mestop"].astype(str).str.upper() == "TRIGGERED"
+        df["_flagged"] = flag_mask
+        sampled = df.iloc[::sample_every]
+        flagged = df[flag_mask]
+        df = pd.concat([sampled, flagged]).drop_duplicates().sort_index().reset_index(drop=True)
+        print(f"  [csv]   {os.path.basename(csv_path)} — {len(df)} rows ({len(sampled)} sampled + {int(flag_mask.sum())} flagged events)")
         for _, row in df.iterrows():
             docs.append(Document(
                 text=_mtconnect_row_to_text(row),
@@ -191,10 +199,69 @@ def load_csv_documents(csv_path: str, sample_every: int = 60) -> list:
                     "execution": str(row.get("Mpexecution", "")),
                     "load":      str(row.get("MS1load", "")),
                     "estop":     str(row.get("Mestop", "")),
+                    "flagged":   "true" if row.get("_flagged") else "false",
                 }
             ))
     except Exception as e:
         print(f"  [ERROR] {csv_path}: {e}")
+    return docs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROGRAM FREQUENCY SUMMARY — injected as searchable docs so "most common
+# program" queries have a single authoritative chunk to retrieve.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _program_summary_docs(csv_files: list) -> list:
+    from collections import Counter
+    docs = []
+    global_counter: Counter = Counter()
+
+    for csv_path in csv_files:
+        try:
+            df = pd.read_csv(csv_path)
+            df.columns = [c.strip() for c in df.columns]
+            if "Mpprogram" not in df.columns:
+                continue
+            programs = (
+                df["Mpprogram"].dropna().astype(str)
+                .str.strip().replace("", pd.NA).dropna()
+            )
+            if programs.empty:
+                continue
+            counter  = Counter(programs.tolist())
+            global_counter.update(counter)
+            top5     = counter.most_common(5)
+            top_name, top_count = top5[0]
+            total    = sum(counter.values())
+
+            ts_col = pd.to_datetime(df.get("timestamp", pd.Series(dtype=str)), errors="coerce").dropna()
+            date_range = ""
+            if not ts_col.empty:
+                s, e = ts_col.min().strftime("%B %Y"), ts_col.max().strftime("%B %Y")
+                date_range = f" ({s}–{e})" if s != e else f" ({s})"
+
+            others = ", ".join(f"{n} ({c} rows)" for n, c in top5[1:])
+            text = (
+                f"[PROGRAM-SUMMARY] {os.path.basename(csv_path)}{date_range}: "
+                f"most common CNC program is {top_name} with {top_count} of {total} rows "
+                f"({round(top_count / total * 100, 1)}%). "
+                + (f"Other programs: {others}." if others else "")
+            )
+            docs.append(Document(
+                text=text,
+                metadata={"source": os.path.basename(csv_path), "type": "mtconnect"},
+            ))
+        except Exception as exc:
+            print(f"  [WARN] program summary for {csv_path}: {exc}")
+
+    if global_counter:
+        top5g  = global_counter.most_common(5)
+        lines  = ", ".join(f"{n} ({c} rows)" for n, c in top5g)
+        docs.append(Document(
+            text=f"[PROGRAM-SUMMARY] Across all MTConnect data, CNC program frequency: {lines}.",
+            metadata={"source": "all_csvs", "type": "mtconnect"},
+        ))
     return docs
 
 
@@ -380,15 +447,20 @@ def load_xlsx_documents(xlsx_path: str) -> list:
             doc_type = "job_data"
 
             if norm == "Part_Details":
-                row_fn = _part_details_row_to_text
+                row_fn   = _part_details_row_to_text
+                doc_type = "part_details"
             elif norm == "Machine_Shift_Summary":
-                row_fn = _machine_summary_row_to_text
+                row_fn   = _machine_summary_row_to_text
+                doc_type = "machine_summary"
             elif norm == "Date_Shift_Summary":
-                row_fn = _date_shift_summary_row_to_text
+                row_fn   = _date_shift_summary_row_to_text
+                doc_type = "shift_summary"
             elif norm == "RAG_Text":
-                row_fn = _rag_text_row_to_text
+                row_fn   = _rag_text_row_to_text
+                doc_type = "rag_text"
             elif norm == "Sheet1":   # file_with_utc_shift_times_Ar.xlsx
-                row_fn = _shift_times_row_to_text
+                row_fn   = _shift_times_row_to_text
+                doc_type = "shift_times"
             elif bool(_MTCONNECT_COLS & set(df.columns)):
                 row_fn   = lambda row: _mtconnect_row_to_text(row)
                 doc_type = "mtconnect"
@@ -472,11 +544,14 @@ def ingest():
         docs = load_xlsx_documents(p)
         documents.extend(docs)
 
-    # 4. CSV / MTConnect (sampled)
+    # 4. CSV / MTConnect (sampled + flagged events preserved)
     print(f"\n── Ingesting CSV files (every {CSV_SAMPLE_EVERY} rows) ────────────────────")
     for p in sorted(csv_files):
         docs = load_csv_documents(p, sample_every=CSV_SAMPLE_EVERY)
         documents.extend(docs)
+    summary_docs = _program_summary_docs(sorted(csv_files))
+    documents.extend(summary_docs)
+    print(f"  -> {len(summary_docs)} program summary doc(s) added")
 
     # 5. WAV / Audio
     print(f"\n── Ingesting WAV files ────────────────────────────────────")
